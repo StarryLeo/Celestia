@@ -1025,6 +1025,11 @@ Star::getPosition(double t) const
         }
         else
         {
+            if (barycenter == this)
+            {
+                cout << "Star orbiting around self (" << getIndex() << ")!\n";
+                return UniversalCoord::CreateLy(position.cast<double>());
+            }
             return barycenter->getPosition(t).offsetKm(orbit->positionAtTime(t));
         }
     }
@@ -1146,6 +1151,11 @@ void Star::setDetails(StarDetails* sd)
 
 void Star::setOrbitBarycenter(Star* s)
 {
+    if (s == this)
+    {
+        fmt::fprintf(cerr, "Star (%i) going to orbit self!\n", getIndex());
+        return;
+    }
     if (details->shared())
         details = new StarDetails(*details);
     getDetails()->setOrbitBarycenter(s);
@@ -1369,7 +1379,7 @@ bool Star::createStar(Star* star,
             string barycenterName;
             if (starData->getString("OrbitBarycenter", barycenterName))
             {
-                barycenterCatNo   = db->nameToIndex(barycenterName);
+                barycenterCatNo   = db->starnameToIndex(barycenterName, true);
                 barycenterDefined = true;
             }
             else if (starData->getNumber("OrbitBarycenter", barycenterCatNo))
@@ -1381,15 +1391,20 @@ bool Star::createStar(Star* star,
             {
                 if (barycenterCatNo != AstroCatalog::InvalidIndex)
                 {
+                    if (barycenterCatNo == star->getIndex())
+                    {
+                        fmt::fprintf(cerr, "Barycenter index %i same as orbiting star!\n", barycenterCatNo);
+                        return false;
+                    }
 //                     clog << "  requesting barycenter with nr " << barycenterCatNo << endl;
                     Star* barycenter = db->getStar(barycenterCatNo);
                     if (barycenter != nullptr)
                     {
-//                         clog << "  Requested barycenter exists...\n";
-//                         if (barycenter->getDetails() == nullptr)
-//                             clog << "  ...but coresponding details not!\n";
-//                         else
-//                             clog << "  ...as well as coresponding details.\n";
+                        if (barycenter == star)
+                        {
+                            fmt::fprintf(cerr, "Created star %i going to orbit self with nr %i!\n", star->getIndex(), barycenter->getIndex());
+                            return false;
+                        }
                         hasBarycenter = true;
                         barycenterPosition = barycenter->getPosition();
                         star->setOrbitBarycenter(barycenter);

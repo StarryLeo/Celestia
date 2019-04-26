@@ -27,6 +27,10 @@
 #ifdef USE_SPICE
 #include <celephem/spiceinterface.h>
 #endif
+#include <celengine/stardataloader.h>
+#include <celengine/dsodataloader.h>
+#include <celengine/namedataloader.h>
+#include <celengine/xindexdataloader.h>
 #include <celengine/axisarrow.h>
 #include <celengine/planetgrid.h>
 #include <celengine/visibleregion.h>
@@ -373,7 +377,7 @@ void CelestiaCore::addFavorite(string name, string parentFolder, FavoritesList::
 
     Selection sel = sim->getSelection();
     if (sel.deepsky() != nullptr)
-        fav->selectionName = sim->getUniverse()->getDSOCatalog()->getDSOName(sel.deepsky());
+        fav->selectionName = sim->getUniverse()->getDatabase().getObjectName(sel.deepsky());
     else
         fav->selectionName = sel.getName();
 
@@ -1754,7 +1758,7 @@ void CelestiaCore::charEntered(const char *c_p, int modifiers)
 
     case 'H':
         addToHistory();
-        sim->setSelection(sim->getUniverse()->getStarCatalog()->find(0));
+        sim->setSelection(sim->getUniverse()->getDatabase().getStar(0));
         break;
 
     case 'I':
@@ -3209,9 +3213,9 @@ static string getSelectionName(const Selection& sel, const Universe& univ)
     case Selection::Type_Body:
         return sel.body()->getName(false);
     case Selection::Type_DeepSky:
-        return univ.getDSOCatalog()->getDSOName(sel.deepsky(), false);
+        return univ.getDatabase().getObjectName(sel.deepsky(), false);
     case Selection::Type_Star:
-        return univ.getStarCatalog()->getStarName(*sel.star(), true);
+        return univ.getDatabase().getObjectName(sel.star(), true);
     case Selection::Type_Location:
         return sel.location()->getName(false);
     default:
@@ -3584,10 +3588,10 @@ void CelestiaCore::renderOverlay()
                 if (sel != lastSelection)
                 {
                     lastSelection = sel;
-                    selectionNames = sim->getUniverse()->getStarCatalog()->getStarNameList(*sel.star());
+                    selectionNames = sim->getUniverse()->getDatabase().getObjectNameList(sel.star());
                     // Skip displaying the English name if a localized version is present.
-                    string starName = sim->getUniverse()->getStarCatalog()->getStarName(*sel.star());
-                    string locStarName = sim->getUniverse()->getStarCatalog()->getStarName(*sel.star(), true);
+                    string starName = sim->getUniverse()->getDatabase().getObjectName(sel.star());
+                    string locStarName = sim->getUniverse()->getDatabase().getObjectName(sel.star(), true);
                     if (sel.star()->getIndex() == 0 && selectionNames.find("Sun") != string::npos && (const char*) "Sun" != _("Sun"))
                     {
                         string::size_type startPos = selectionNames.find("Sun");
@@ -3618,10 +3622,10 @@ void CelestiaCore::renderOverlay()
                 if (sel != lastSelection)
                 {
                     lastSelection = sel;
-                    selectionNames = sim->getUniverse()->getDSOCatalog()->getDSONameList(sel.deepsky());
+                    selectionNames = sim->getUniverse()->getDatabase().getObjectNameList(sel.deepsky());
                     // Skip displaying the English name if a localized version is present.
-                    string DSOName = sim->getUniverse()->getDSOCatalog()->getDSOName(sel.deepsky());
-                    string locDSOName = sim->getUniverse()->getDSOCatalog()->getDSOName(sel.deepsky(), true);
+                    string DSOName = sim->getUniverse()->getDatabase().getObjectName(sel.deepsky());
+                    string locDSOName = sim->getUniverse()->getDatabase().getObjectName(sel.deepsky(), true);
                     if (selectionNames.find(DSOName) != string::npos && DSOName != locDSOName)
                     {
                         string::size_type startPos = selectionNames.find(locDSOName);
@@ -3971,19 +3975,19 @@ class SolarSystemLoader : public EnumFilesHandler
     };
 };
 
-template <class OBJDB> class CatalogLoader : public EnumFilesHandler
+class CatalogLoader : public EnumFilesHandler
 {
 public:
-    OBJDB*      objDB;
+    AstroDataLoader &m_loader;
     string      typeDesc;
     ContentType contentType;
     ProgressNotifier* notifier;
 
-    CatalogLoader(OBJDB* db,
+    CatalogLoader(AstroDataLoader &loader,
                   const std::string& typeDesc,
                   const ContentType& contentType,
                   ProgressNotifier* pn) :
-        objDB      (db),
+        m_loader      (loader),
         typeDesc   (typeDesc),
         contentType(contentType),
         notifier(pn)
@@ -4002,7 +4006,8 @@ public:
             ifstream catalogFile(fullname, ios::in);
             if (catalogFile.good())
             {
-                bool success = objDB->load(catalogFile, getPath());
+                m_loader.resourcePath = getPath();
+                bool success = m_loader.load(catalogFile);
                 if (!success)
                 {
                     //DPRINTF(0, _("Error reading star file: %s\n"), fullname.c_str());
@@ -4013,9 +4018,6 @@ public:
         return true;
     }
 };
-
-using StarLoader = CatalogLoader<StarDatabase>;
-using DeepSkyLoader = CatalogLoader<DSODatabase>;
 
 
 bool CelestiaCore::initSimulation(const string& configFileName,
@@ -4088,7 +4090,7 @@ bool CelestiaCore::initSimulation(const string& configFileName,
         favorites = new FavoritesList();
 
     universe = new Universe();
-
+    AstroDatabase &aDB = universe->getDatabase();
 
     /***** Load star catalogs *****/
 
@@ -4101,12 +4103,9 @@ bool CelestiaCore::initSimulation(const string& configFileName,
 
     /***** Load the deep sky catalogs *****/
 
-    DSONameDatabase* dsoNameDB  = new DSONameDatabase;
-    DSODatabase*     dsoDB      = new DSODatabase;
-    dsoDB->setNameDatabase(dsoNameDB);
-
     // Load first the vector of dsoCatalogFiles in the data directory (deepsky.dsc, globulars.dsc,...):
 
+    DscDataLoader dscLoader(&aDB);
     for (const auto& file : config->dsoCatalogFiles)
     {
         if (progressNotifier)
@@ -4117,7 +4116,7 @@ bool CelestiaCore::initSimulation(const string& configFileName,
         {
             warning(fmt::sprintf(_("Error opening deepsky catalog file %s.\n"), file));
         }
-        if (!dsoDB->load(dsoFile, ""))
+        if (!dscLoader.load(dsoFile))
         {
             warning(fmt::sprintf(_("Cannot read Deep Sky Objects database %s.\n"), file));
         }
@@ -4131,7 +4130,7 @@ bool CelestiaCore::initSimulation(const string& configFileName,
             {
                 Directory* dir = OpenDirectory(_dir);
 
-                DeepSkyLoader loader(dsoDB,
+                CatalogLoader loader(dscLoader,
                                      "deep sky object",
                                      Content_CelestiaDeepSkyCatalog,
                                      progressNotifier);
@@ -4142,8 +4141,6 @@ bool CelestiaCore::initSimulation(const string& configFileName,
             }
         }
     }
-    dsoDB->finish();
-    universe->setDSOCatalog(dsoDB);
 
 
     /***** Load the solar system catalogs *****/
@@ -4198,7 +4195,7 @@ bool CelestiaCore::initSimulation(const string& configFileName,
         else
         {
             AsterismList* asterisms = ReadAsterismList(asterismsFile,
-                                                       *universe->getStarCatalog());
+                                                       universe->getDatabase());
             universe->setAsterisms(asterisms);
         }
     }
@@ -4341,7 +4338,7 @@ bool CelestiaCore::initRenderer()
 }
 
 
-static void loadCrossIndex(StarDatabase* starDB,
+static void loadCrossIndex(CrossIndexDataLoader &xloader,
                            StarDatabase::Catalog catalog,
                            const string& filename)
 {
@@ -4350,7 +4347,8 @@ static void loadCrossIndex(StarDatabase* starDB,
         ifstream xrefFile(filename, ios::in | ios::binary);
         if (xrefFile.good())
         {
-            if (!starDB->loadCrossIndex(catalog, xrefFile))
+            xloader.catalog = catalog;
+            if (!xloader.load(xrefFile))
                 fmt::fprintf(cerr, _("Error reading cross index %s\n"), filename);
             else
                 fmt::fprintf(clog, _("Loaded cross index %s\n"), filename);
@@ -4362,6 +4360,8 @@ static void loadCrossIndex(StarDatabase* starDB,
 bool CelestiaCore::readStars(const CelestiaConfig& cfg,
                              ProgressNotifier* progressNotifier)
 {
+    AstroDatabase &aDB = universe->getDatabase();
+
     StarDetails::SetStarTextures(cfg.starTextures);
 
     ifstream starNamesFile(cfg.starNamesFile, ios::in);
@@ -4371,8 +4371,9 @@ bool CelestiaCore::readStars(const CelestiaConfig& cfg,
         return false;
     }
 
-    StarNameDatabase* starNameDB = StarNameDatabase::readNames(starNamesFile);
-    if (starNameDB == nullptr)
+//    StarNameDatabase* starNameDB = StarNameDatabase::readNames(starNamesFile);
+    NameDataLoader nameLoader(&aDB);
+    if (!nameLoader.load(starNamesFile))
     {
         cerr << _("Error reading star names file\n");
         return false;
@@ -4380,7 +4381,6 @@ bool CelestiaCore::readStars(const CelestiaConfig& cfg,
 
     // First load the binary star database file.  The majority of stars
     // will be defined here.
-    StarDatabase* starDB = new StarDatabase();
     if (!cfg.starDatabaseFile.empty())
     {
         if (progressNotifier)
@@ -4390,30 +4390,26 @@ bool CelestiaCore::readStars(const CelestiaConfig& cfg,
         if (!starFile.good())
         {
             fmt::fprintf(cerr, _("Error opening %s\n"), cfg.starDatabaseFile);
-            delete starDB;
-            delete starNameDB;
             return false;
         }
 
-        if (!starDB->loadBinary(starFile))
+        StarBinDataLoader starBinLoader(&aDB);
+        if (!starBinLoader.load(starFile))
         {
             cerr << _("Error reading stars file\n");
-            delete starDB;
-            delete starNameDB;
             return false;
         }
     }
-
-    starDB->setNameDatabase(starNameDB);
-
-    loadCrossIndex(starDB, StarDatabase::HenryDraper, cfg.HDCrossIndexFile);
-    loadCrossIndex(starDB, StarDatabase::SAO,         cfg.SAOCrossIndexFile);
-    loadCrossIndex(starDB, StarDatabase::Gliese,      cfg.GlieseCrossIndexFile);
+    CrossIndexDataLoader xloader(&aDB);
+    loadCrossIndex(xloader, StarDatabase::HenryDraper, cfg.HDCrossIndexFile);
+    loadCrossIndex(xloader, StarDatabase::SAO,         cfg.SAOCrossIndexFile);
+    loadCrossIndex(xloader, StarDatabase::Gliese,      cfg.GlieseCrossIndexFile);
 
     // Next, read any ASCII star catalog files specified in the StarCatalogs
     // list.
     if (!cfg.starCatalogFiles.empty())
     {
+        StcDataLoader stcLoader(&aDB);
         for (const auto& file : config->starCatalogFiles)
         {
             if (file != "")
@@ -4421,7 +4417,7 @@ bool CelestiaCore::readStars(const CelestiaConfig& cfg,
                 ifstream starFile(file, ios::in);
                 if (starFile.good())
                 {
-                    starDB->load(starFile, "");
+                    stcLoader.load(starFile);
                 }
                 else
                 {
@@ -4432,23 +4428,20 @@ bool CelestiaCore::readStars(const CelestiaConfig& cfg,
     }
 
     // Now, read supplemental star files from the extras directories
+    StcDataLoader stcLoader(&aDB);
     for (const auto& _dir : config->extrasDirs)
     {
         if (_dir != "")
         {
             Directory* dir = OpenDirectory(_dir);
 
-            StarLoader loader(starDB, "star", Content_CelestiaStarCatalog, progressNotifier);
+            CatalogLoader loader(stcLoader, "star", Content_CelestiaStarCatalog, progressNotifier);
             loader.pushDir(_dir);
             dir->enumFiles(loader, true);
 
             delete dir;
         }
     }
-
-    starDB->finish();
-
-    universe->setStarCatalog(starDB);
 
     return true;
 }
