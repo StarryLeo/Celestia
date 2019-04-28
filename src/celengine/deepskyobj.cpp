@@ -26,16 +26,6 @@
 using namespace Eigen;
 using namespace std;
 
-Vector3d DeepSkyObject::getPosition() const
-{
-    return position;
-}
-
-void DeepSkyObject::setPosition(const Vector3d& p)
-{
-    position = p;
-}
-
 Quaternionf DeepSkyObject::getOrientation() const
 {
     return orientation;
@@ -49,16 +39,6 @@ void DeepSkyObject::setOrientation(const Quaternionf& q)
 void DeepSkyObject::setRadius(float r)
 {
     radius = r;
-}
-
-float DeepSkyObject::getAbsoluteMagnitude() const
-{
-    return absMag;
-}
-
-void DeepSkyObject::setAbsoluteMagnitude(float _absMag)
-{
-    absMag = _absMag;
 }
 
 string DeepSkyObject::getDescription() const
@@ -82,7 +62,7 @@ bool DeepSkyObject::pick(const Ray3d& ray,
                          double& cosAngleToBoundCenter) const
 {
     if (isVisible())
-        return testIntersection(ray, Sphered(position, (double) radius), distanceToPicker, cosAngleToBoundCenter);
+        return testIntersection(ray, Sphered(getPosition(), (double) radius), distanceToPicker, cosAngleToBoundCenter);
     else
         return false;
 }
